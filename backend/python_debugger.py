@@ -4,13 +4,17 @@ import subprocess
 import traceback
 import json
 import io
+import uuid
 from contextlib import redirect_stdout, redirect_stderr
 
 class SimpleTracer:
     def __init__(self):
         self.debug_states = []
         self.current_call_stack = []
+        self.call_stack_ids = {}  # To track parent-child relationships
+        self.call_history = []    # To track call hierarchy
         self.line_execution_count = {}
+        self.call_id_counter = 0  # For generating unique call IDs
 
     def trace_calls(self, frame, event, arg):
         """Trace function calls"""
@@ -22,14 +26,43 @@ class SimpleTracer:
             # Skip library code
             if '<frozen' in filename or '/lib/' in filename:
                 return None
-                
+            
+            # Generate unique call ID for this function call
+            self.call_id_counter += 1
+            call_id = f"{func_name}_{self.call_id_counter}"
+            
+            # Determine parent call ID
+            parent_id = None
+            if self.current_call_stack:
+                parent_id = self.current_call_stack[-1].get('call_id')
+            
             # Add to call stack
-            self.current_call_stack.append({
+            call_info = {
                 'function': func_name,
                 'line': line_no,
-                'file': filename
+                'file': filename,
+                'call_id': call_id,
+                'parent_id': parent_id,
+                'stack_depth': len(self.current_call_stack)
+            }
+            
+            self.current_call_stack.append(call_info)
+            self.call_history.append({
+                'call_id': call_id,
+                'parent_id': parent_id,
+                'function': func_name,
+                'entry_line': line_no,
+                'stack_depth': len(self.current_call_stack) - 1,
+                'children': []
             })
             
+            # Update parent's children list
+            if parent_id:
+                for call in self.call_history:
+                    if call['call_id'] == parent_id:
+                        call['children'].append(call_id)
+                        break
+                
         return self.trace_lines
         
     def trace_lines(self, frame, event, arg):
@@ -58,12 +91,32 @@ class SimpleTracer:
                 except:
                     variables[name] = "Error: Unparseable value"
             
+            # Get current call info
+            current_call_info = self.current_call_stack[-1] if self.current_call_stack else None
+            call_id = current_call_info.get('call_id') if current_call_info else None
+            parent_id = current_call_info.get('parent_id') if current_call_info else None
+            stack_depth = len(self.current_call_stack)
+            
+            # Get full call stack info
+            call_stack = []
+            for call in self.current_call_stack:
+                call_stack.append({
+                    'function': call['function'],
+                    'line': call['line'],
+                    'call_id': call['call_id'],
+                    'parent_id': call['parent_id'],
+                })
+            
             # Add to debug states
             self.debug_states.append({
                 'lineNumber': line_no,
                 'functionName': func_name,
                 'variables': variables,
-                'callStack': list(self.current_call_stack)  # Make a copy of the call stack
+                'callStack': call_stack,
+                'callId': call_id,
+                'parentId': parent_id,
+                'stackDepth': stack_depth,
+                'eventType': 'step'
             })
             
             # Track line execution count (for handling recursion)
@@ -72,17 +125,61 @@ class SimpleTracer:
         
         elif event == 'return':
             if self.current_call_stack:
+                func_name = frame.f_code.co_name
+                line_no = frame.f_lineno
+                
+                # Collect return value
+                return_value = None
+                if arg is not None:
+                    try:
+                        if isinstance(arg, (int, float, bool, str, type(None))):
+                            return_value = arg
+                        else:
+                            return_value = repr(arg)
+                    except:
+                        return_value = "Error: Unparseable return value"
+                
+                # Get call info before popping from stack
+                current_call_info = self.current_call_stack[-1]
+                call_id = current_call_info.get('call_id')
+                parent_id = current_call_info.get('parent_id')
+                stack_depth = len(self.current_call_stack) - 1  # -1 because we're returning
+                
+                # Add return event
+                self.debug_states.append({
+                    'lineNumber': line_no,
+                    'functionName': func_name,
+                    'variables': {'return_value': return_value},
+                    'callStack': list(self.current_call_stack),  # Copy before popping
+                    'callId': call_id,
+                    'parentId': parent_id,
+                    'stackDepth': stack_depth,
+                    'eventType': 'return',
+                    'returnValue': return_value
+                })
+                
+                # Now pop from call stack
                 self.current_call_stack.pop()
-        
+                
         elif event == 'exception':
             exc_type, exc_value, exc_traceback = arg
             variables = {'exception_type': exc_type.__name__, 'exception_message': str(exc_value)}
+            
+            # Get current call info
+            current_call_info = self.current_call_stack[-1] if self.current_call_stack else None
+            call_id = current_call_info.get('call_id') if current_call_info else None
+            parent_id = current_call_info.get('parent_id') if current_call_info else None
+            stack_depth = len(self.current_call_stack)
             
             self.debug_states.append({
                 'lineNumber': frame.f_lineno,
                 'functionName': frame.f_code.co_name,
                 'variables': variables,
                 'callStack': list(self.current_call_stack),
+                'callId': call_id,
+                'parentId': parent_id,
+                'stackDepth': stack_depth,
+                'eventType': 'exception',
                 'error': True
             })
         
@@ -133,6 +230,10 @@ def debug_python(code, input_data=None):
                 'functionName': 'main',
                 'variables': {'exception': str(e)},
                 'callStack': [],
+                'callId': None,
+                'parentId': None,
+                'stackDepth': 0,
+                'eventType': 'exception',
                 'error': True,
                 'errorDetails': {
                     'type': type(e).__name__,
@@ -166,10 +267,14 @@ def debug_python(code, input_data=None):
     # Simplify states to only include essential information
     simplified_states = simplify_debug_states(filtered_states)
     
+    # Add call hierarchy information
+    result = {
+        'debugStates': simplified_states,
+        'callHierarchy': tracer.call_history
+    }
+    
     print(f"Debug completed - {len(simplified_states)} states")
-    return simplified_states
-
-# Add this function at the end of the file
+    return result
 
 def filter_debug_states(debug_states):
     """Filter debug states to reduce noise and focus on important states"""
@@ -214,27 +319,31 @@ def filter_debug_states(debug_states):
     prev_line = None
     prev_func = None
     prev_vars = {}
+    prev_event_type = None
     
     for state in debug_states:
         line = state['lineNumber']
         func = state['functionName']
+        event_type = state.get('eventType', 'step')
         vars_changed = has_vars_changed(prev_vars, state['variables'])
         
-        # Keep states where:
-        # 1. Line number changed
-        # 2. Function changed
-        # 3. Variables changed significantly
-        # 4. Has an error
-        # 5. Is first or last state
-        if (line != prev_line or 
-            func != prev_func or 
-            vars_changed or 
-            state.get('error', False) or
-            len(filtered) == 0):
+        # Always keep function entry/exit points and exception states
+        keep_state = (
+            event_type != prev_event_type or  # Event type changed
+            event_type in ('return', 'exception') or  # Always keep returns and exceptions
+            line != prev_line or  # Line number changed
+            func != prev_func or  # Function changed
+            vars_changed or  # Variables changed significantly
+            state.get('error', False) or  # Error states
+            len(filtered) == 0  # First state
+        )
+        
+        if keep_state:
             filtered.append(state)
             prev_line = line
             prev_func = func
             prev_vars = state['variables'].copy()
+            prev_event_type = event_type
     
     # Always include the last state
     if debug_states and (not filtered or filtered[-1] != debug_states[-1]):
@@ -243,7 +352,7 @@ def filter_debug_states(debug_states):
     return filtered
 
 def simplify_debug_states(debug_states):
-    """Extract only variable states from debug states"""
+    """Extract only essential information from debug states"""
     simplified = []
     
     # Remove duplicate error states (keep only the last one)
@@ -260,20 +369,34 @@ def simplify_debug_states(debug_states):
             filtered_states.insert(0, state)
     
     for state in filtered_states:
-        # Skip states with empty variables
-        if not state['variables']:
-            continue
-            
         # Skip internal Python machinery states
         if state['functionName'] in ['decode', '__init__', '__new__'] or state['functionName'].startswith('_'):
             continue
             
-        # Create a minimal state with just line, function and variables
+        # Create a simplified state with all necessary information for visualization
         simple_state = {
             'line': state['lineNumber'],
             'function': state['functionName'],
-            'variables': clean_variables(state['variables'])
+            'variables': clean_variables(state['variables']),
+            'callId': state.get('callId'),
+            'parentId': state.get('parentId'),
+            'stackDepth': state.get('stackDepth', 0),
+            'eventType': state.get('eventType', 'step')
         }
+        
+        # Add full call stack info with parent-child relationships
+        if 'callStack' in state and state['callStack']:
+            # Simplify callStack to contain only essential info
+            simple_state['callStack'] = [{
+                'function': call['function'],
+                'line': call['line'],
+                'call_id': call.get('call_id'),
+                'parent_id': call.get('parent_id')
+            } for call in state['callStack']]
+        
+        # Add return value if present
+        if 'returnValue' in state:
+            simple_state['returnValue'] = state['returnValue']
         
         # Add error information if present
         if state.get('error', False):
@@ -288,7 +411,7 @@ def simplify_debug_states(debug_states):
             simple_state['output'] = state['output']
         
         # Only add the state if it has useful information
-        if simple_state['variables'] or state.get('error', False):
+        if simple_state['variables'] or state.get('error', False) or state.get('eventType') != 'step':
             simplified.append(simple_state)
     
     return simplified
