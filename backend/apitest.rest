@@ -1,0 +1,94 @@
+@baseUrl = http://localhost:5000
+@contentType = application/json
+
+### Test API status
+GET {{baseUrl}}/ HTTP/1.1
+
+### Debug Python code (simple factorial)
+POST {{baseUrl}}/api/debug
+Content-Type: {{contentType}}
+
+{
+  "language": "python",
+  "code": "def factorial(n):\n    if n <= 1:\n        return 1\n    return n * factorial(n-1)\n\nprint(factorial(5))",
+  "input": ""
+}
+
+### Debug Python code with input
+POST {{baseUrl}}/api/debug
+Content-Type: {{contentType}}
+
+{
+  "language": "python",
+  "code": "name = input('Enter your name: ')\nprint(f'Hello, {name}!')",
+  "input": "John"
+}
+
+### Debug Python code with error
+POST {{baseUrl}}/api/debug
+Content-Type: {{contentType}}
+
+{
+  "language": "python",
+  "code": "def divide(a, b):\n    return a / b\n\nprint(divide(10, 0))",
+  "input": ""
+}
+
+### Test unsupported language
+POST {{baseUrl}}/api/debug
+Content-Type: {{contentType}}
+
+{
+  "language": "java",
+  "code": "public class Main {\n    public static void main(String[] args) {\n        System.out.println(\"Hello\");\n    }\n}",
+  "input": ""
+}
+
+### Test empty code
+POST {{baseUrl}}/api/debug
+Content-Type: {{contentType}}
+
+{
+  "language": "python",
+  "code": "",
+  "input": ""
+}
+
+### Test missing language parameter
+POST {{baseUrl}}/api/debug
+Content-Type: {{contentType}}
+
+{
+  "code": "print('hello')",
+  "input": ""
+}
+
+### Test large input
+POST {{baseUrl}}/api/debug
+Content-Type: {{contentType}}
+
+{
+  "language": "python",
+  "code": "import sys\n\ndef process_large_input():\n    data = sys.stdin.read()\n    print(f'Received {len(data)} characters')\n\nprocess_large_input()",
+  "input": "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
+}
+
+### Test complex Python code with multiple functions
+POST {{baseUrl}}/api/debug
+Content-Type: {{contentType}}
+
+{
+  "language": "python",
+  "code": "def is_prime(n):\n    if n <= 1:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\ndef primes_up_to(limit):\n    primes = []\n    for num in range(2, limit + 1):\n        if is_prime(num):\n            primes.append(num)\n    return primes\n\nprint(primes_up_to(50))",
+  "input": ""
+}
+
+### Test JavaScript code (when implemented)
+POST {{baseUrl}}/api/debug
+Content-Type: {{contentType}}
+
+{
+  "language": "javascript",
+  "code": "function fibonacci(n) {\n    if (n <= 1) return n;\n    return fibonacci(n - 1) + fibonacci(n - 2);\n}\n\nconsole.log(fibonacci(10));",
+  "input": ""
+}

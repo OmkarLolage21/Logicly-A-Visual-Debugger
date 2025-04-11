@@ -1,0 +1,330 @@
+import sys
+import tempfile
+import subprocess
+import traceback
+import json
+import io
+from contextlib import redirect_stdout, redirect_stderr
+
+class SimpleTracer:
+    def __init__(self):
+        self.debug_states = []
+        self.current_call_stack = []
+        self.line_execution_count = {}
+
+    def trace_calls(self, frame, event, arg):
+        """Trace function calls"""
+        if event == 'call':
+            func_name = frame.f_code.co_name
+            line_no = frame.f_lineno
+            filename = frame.f_code.co_filename
+            
+            # Skip library code
+            if '<frozen' in filename or '/lib/' in filename:
+                return None
+                
+            # Add to call stack
+            self.current_call_stack.append({
+                'function': func_name,
+                'line': line_no,
+                'file': filename
+            })
+            
+        return self.trace_lines
+        
+    def trace_lines(self, frame, event, arg):
+        """Trace line execution"""
+        if event == 'line':
+            filename = frame.f_code.co_filename
+            
+            # Skip library code
+            if '<frozen' in filename or '/lib/' in filename:
+                return
+                
+            line_no = frame.f_lineno
+            func_name = frame.f_code.co_name
+            
+            # Collect local variables
+            variables = {}
+            for name, value in frame.f_locals.items():
+                try:
+                    # Convert values to strings to ensure they're serializable
+                    if isinstance(value, (int, float, bool, str, type(None))):
+                        variables[name] = value
+                    elif hasattr(value, '__dict__'):
+                        variables[name] = str(value)
+                    else:
+                        variables[name] = repr(value)
+                except:
+                    variables[name] = "Error: Unparseable value"
+            
+            # Add to debug states
+            self.debug_states.append({
+                'lineNumber': line_no,
+                'functionName': func_name,
+                'variables': variables,
+                'callStack': list(self.current_call_stack)  # Make a copy of the call stack
+            })
+            
+            # Track line execution count (for handling recursion)
+            line_key = f"{filename}:{line_no}"
+            self.line_execution_count[line_key] = self.line_execution_count.get(line_key, 0) + 1
+        
+        elif event == 'return':
+            if self.current_call_stack:
+                self.current_call_stack.pop()
+        
+        elif event == 'exception':
+            exc_type, exc_value, exc_traceback = arg
+            variables = {'exception_type': exc_type.__name__, 'exception_message': str(exc_value)}
+            
+            self.debug_states.append({
+                'lineNumber': frame.f_lineno,
+                'functionName': frame.f_code.co_name,
+                'variables': variables,
+                'callStack': list(self.current_call_stack),
+                'error': True
+            })
+        
+        return self.trace_lines
+
+def debug_python(code, input_data=None):
+    """Debug Python code using sys.settrace"""
+    # Save code to a temporary file
+    with tempfile.NamedTemporaryFile('w', suffix='.py', delete=False) as temp_file:
+        temp_file.write(code)
+        temp_filename = temp_file.name
+
+    # Capture stdout and stderr
+    output_buffer = io.StringIO()
+    error_buffer = io.StringIO()
+    
+    # Set up the tracer
+    tracer = SimpleTracer()
+    
+    # Run the code with the tracer
+    try:
+        with redirect_stdout(output_buffer), redirect_stderr(error_buffer):
+            # Prepare input if provided
+            if input_data:
+                sys.stdin = io.StringIO(input_data)
+            
+            # Set up the trace function
+            sys.settrace(tracer.trace_calls)
+            
+            # Execute the code
+            with open(temp_filename, 'r') as f:
+                code_obj = compile(f.read(), temp_filename, 'exec')
+                global_vars = {'__file__': temp_filename}
+                exec(code_obj, global_vars)
+            
+            # Turn off tracing
+            sys.settrace(None)
+            
+    except Exception as e:
+        # Capture any exceptions
+        error_msg = traceback.format_exc()
+        print(f"Error executing code: {error_msg}")
+        
+        # Add the error state if it hasn't been added by the tracer
+        if not tracer.debug_states or not tracer.debug_states[-1].get('error'):
+            tracer.debug_states.append({
+                'lineNumber': -1,
+                'functionName': 'main',
+                'variables': {'exception': str(e)},
+                'callStack': [],
+                'error': True,
+                'errorDetails': {
+                    'type': type(e).__name__,
+                    'message': str(e),
+                    'traceback': error_msg
+                }
+            })
+    finally:
+        # Clean up
+        import os
+        os.unlink(temp_filename)
+        sys.settrace(None)
+        
+        # Reset stdin if we modified it
+        if input_data:
+            sys.stdin = sys.__stdin__
+    
+    # Get the captured output
+    output = output_buffer.getvalue()
+    error = error_buffer.getvalue()
+    
+    # Add output to the last debug state
+    if tracer.debug_states:
+        tracer.debug_states[-1]['output'] = output
+        if error:
+            tracer.debug_states[-1]['error_output'] = error
+    
+    # Filter debug states to reduce noise
+    filtered_states = filter_debug_states(tracer.debug_states)
+    
+    # Simplify states to only include essential information
+    simplified_states = simplify_debug_states(filtered_states)
+    
+    print(f"Debug completed - {len(simplified_states)} states")
+    return simplified_states
+
+# Add this function at the end of the file
+
+def filter_debug_states(debug_states):
+    """Filter debug states to reduce noise and focus on important states"""
+    if len(debug_states) <= 10:  # If there are very few states, return them all
+        return debug_states
+    
+    # Check if there's an error state
+    has_error = any(state.get('error', False) for state in debug_states)
+    
+    if has_error:
+        # For error cases, only keep the most relevant states
+        filtered = []
+        user_code_only = []
+        
+        # First, filter to only keep user code (not traceback/internal code)
+        for state in debug_states:
+            # Skip internal Python functions used for traceback
+            if state['functionName'] in ['format_exc', 'format_exception', 'lazycache', 'checkcache']:
+                continue
+                
+            # Skip Python machinery
+            if state['functionName'].startswith('_') or state['functionName'] in ['<listcomp>', 'decode', '__init__']:
+                continue
+                
+            # Keep user code states
+            user_code_only.append(state)
+        
+        # For error cases, just take first few states and the error state
+        for i, state in enumerate(user_code_only):
+            # Keep the first few states of execution
+            if i < 5:
+                filtered.append(state)
+            
+            # Always keep error states
+            if state.get('error', False):
+                filtered.append(state)
+        
+        return filtered
+    
+    # For non-error cases, use normal filtering logic
+    filtered = []
+    prev_line = None
+    prev_func = None
+    prev_vars = {}
+    
+    for state in debug_states:
+        line = state['lineNumber']
+        func = state['functionName']
+        vars_changed = has_vars_changed(prev_vars, state['variables'])
+        
+        # Keep states where:
+        # 1. Line number changed
+        # 2. Function changed
+        # 3. Variables changed significantly
+        # 4. Has an error
+        # 5. Is first or last state
+        if (line != prev_line or 
+            func != prev_func or 
+            vars_changed or 
+            state.get('error', False) or
+            len(filtered) == 0):
+            filtered.append(state)
+            prev_line = line
+            prev_func = func
+            prev_vars = state['variables'].copy()
+    
+    # Always include the last state
+    if debug_states and (not filtered or filtered[-1] != debug_states[-1]):
+        filtered.append(debug_states[-1])
+        
+    return filtered
+
+def simplify_debug_states(debug_states):
+    """Extract only variable states from debug states"""
+    simplified = []
+    
+    # Remove duplicate error states (keep only the last one)
+    error_funcs_seen = set()
+    filtered_states = []
+    
+    for state in reversed(debug_states):
+        # For error states, only keep one per function
+        if state.get('error', False):
+            if state['functionName'] not in error_funcs_seen:
+                filtered_states.insert(0, state)
+                error_funcs_seen.add(state['functionName'])
+        else:
+            filtered_states.insert(0, state)
+    
+    for state in filtered_states:
+        # Skip states with empty variables
+        if not state['variables']:
+            continue
+            
+        # Skip internal Python machinery states
+        if state['functionName'] in ['decode', '__init__', '__new__'] or state['functionName'].startswith('_'):
+            continue
+            
+        # Create a minimal state with just line, function and variables
+        simple_state = {
+            'line': state['lineNumber'],
+            'function': state['functionName'],
+            'variables': clean_variables(state['variables'])
+        }
+        
+        # Add error information if present
+        if state.get('error', False):
+            simple_state['error'] = True
+            if 'errorDetails' in state:
+                simple_state['errorMessage'] = state['errorDetails']['message']
+            elif 'exception_message' in state['variables']:
+                simple_state['errorMessage'] = state['variables']['exception_message']
+        
+        # Add output only to the last state
+        if 'output' in state and state['output']:
+            simple_state['output'] = state['output']
+        
+        # Only add the state if it has useful information
+        if simple_state['variables'] or state.get('error', False):
+            simplified.append(simple_state)
+    
+    return simplified
+
+def clean_variables(variables):
+    """Clean variable values to make them simpler"""
+    cleaned = {}
+    
+    for name, value in variables.items():
+        # Skip Python internal variables
+        if name.startswith('__') and name.endswith('__'):
+            continue
+            
+        # Skip module and complex objects
+        if isinstance(value, str) and ('module' in value or '<' in value and '>' in value):
+            continue
+            
+        # Include exception info
+        if name in ['exception_type', 'exception_message']:
+            cleaned[name] = value
+            continue
+            
+        # Keep only simple values
+        cleaned[name] = value
+        
+    return cleaned
+
+def has_vars_changed(prev_vars, current_vars):
+    """Check if variables have changed in a meaningful way"""
+    # Different number of variables
+    if len(prev_vars) != len(current_vars):
+        return True
+        
+    # Check for changes in values
+    for key, value in current_vars.items():
+        if key not in prev_vars or prev_vars[key] != value:
+            return True
+            
+    return False
