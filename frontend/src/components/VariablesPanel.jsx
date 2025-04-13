@@ -92,7 +92,8 @@ const VariablesPanel = ({ currentState }) => {
         style={{
           border: "1px solid #eee",
           borderRadius: "0.25rem",
-          overflow: "hidden",
+          overflow: "auto",
+          maxHeight: "200px",
           backgroundColor: "white",
         }}
       >
@@ -148,4 +149,5 @@ const VariablesPanel = ({ currentState }) => {
     </div>
   );
 };
+
 export default VariablesPanel;
