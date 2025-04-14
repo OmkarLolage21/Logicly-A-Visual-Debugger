@@ -6,7 +6,6 @@ import RecursionTree from "./components/RecursionTree";
 import VariablesPanel from "./components/VariablesPanel";
 import RecursionAnalytics from "./components/RecursionAnalytics";
 import { callDebugAPI } from "./lib/api";
-import ComplexityPanel from "./components/ComplexityPanel";
 
 const App = () => {
   const [code, setCode] = useState(
@@ -128,7 +127,6 @@ print(result)
               )}
             </div>
           </div>
-          <ComplexityPanel complexity={debugData.debugStates?.complexity} />
           <motion.div
             initial={{ x: -20 }}
             animate={{ x: 0 }}

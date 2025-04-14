@@ -1,3 +1,5 @@
+// File: RecursionAnalytics.jsx (Restored Execution Statistics Panel)
+
 import React from "react";
 import {
   BarChart,
@@ -10,6 +12,7 @@ import {
   LineChart,
   Line,
 } from "recharts";
+import ComplexityPanel from "./ComplexityPanel";
 
 const RecursionAnalytics = ({ debugData, currentStep }) => {
   if (
@@ -25,10 +28,11 @@ const RecursionAnalytics = ({ debugData, currentStep }) => {
     );
   }
 
-  // Calculate function call statistics
   const functionCalls = {};
   const stackDepthOverTime = [];
   const returnValues = [];
+  const loopDetails = [];
+  let maxStackDepth = 0;
 
   debugData.debugStates.forEach((state, index) => {
     // Track function calls
@@ -36,27 +40,51 @@ const RecursionAnalytics = ({ debugData, currentStep }) => {
       functionCalls[state.function] = (functionCalls[state.function] || 0) + 1;
     }
 
-    // Track stack depth over time
-    stackDepthOverTime.push({
-      step: index + 1,
-      depth: state.stackDepth || 0,
-    });
+    // Stack depth tracking
+    const depth = state.stackDepth || 0;
+    maxStackDepth = Math.max(maxStackDepth, depth);
+    stackDepthOverTime.push({ step: index + 1, depth });
 
-    // Track return values
+    // Return value tracking
     if (state.returnValue !== undefined) {
-      returnValues.push({
-        function: state.function,
-        value: state.returnValue,
+      returnValues.push({ function: state.function, value: state.returnValue });
+    }
+
+    // Loop detection
+    const lineStr = String(state.line || "");
+    if (
+      state.eventType === "step" &&
+      (lineStr.includes("for") || lineStr.includes("while"))
+    ) {
+      loopDetails.push({
+        line: lineStr,
+        nesting_level: depth,
       });
     }
   });
 
-  // Prepare data for function call chart
+  const hasRecursion = debugData.callHierarchy?.some((call) => {
+    return (
+      call.function &&
+      debugData.callHierarchy.some(
+        (other) =>
+          other !== call &&
+          other.function === call.function &&
+          other.parent_id === call.call_id
+      )
+    );
+  });
+
+  const complexity = {
+    time: hasRecursion ? "O(2^n)" : loopDetails.length ? "O(n)" : "O(1)",
+    space: hasRecursion ? "O(n)" : "O(1)",
+    has_recursion: hasRecursion,
+    has_loops: loopDetails.length > 0,
+    loop_details: loopDetails.map((ld) => `Line: ${ld.line}`),
+  };
+
   const functionCallData = Object.entries(functionCalls).map(
-    ([name, count]) => ({
-      name,
-      calls: count,
-    })
+    ([name, count]) => ({ name, calls: count })
   );
 
   return (
@@ -64,6 +92,34 @@ const RecursionAnalytics = ({ debugData, currentStep }) => {
       <div>
         <h2 className="text-lg font-semibold mb-4">Recursion Analytics</h2>
 
+        {/* Execution Stats */}
+        <div className="mb-6 bg-white rounded-lg shadow-md p-4">
+          <h3 className="text-md font-semibold mb-2">Execution Statistics</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+            <div>
+              <div className="text-gray-500">Total Steps</div>
+              <div className="font-semibold">
+                {debugData.debugStates.length}
+              </div>
+            </div>
+            <div>
+              <div className="text-gray-500">Max Stack Depth</div>
+              <div className="font-semibold">{maxStackDepth}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Function Calls</div>
+              <div className="font-semibold">
+                {Object.values(functionCalls).reduce((a, b) => a + b, 0)}
+              </div>
+            </div>
+            <div>
+              <div className="text-gray-500">Return Values</div>
+              <div className="font-semibold">{returnValues.length}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Function Call Chart */}
         <div className="mb-6">
           <h3 className="text-md font-medium mb-2">
             Function Call Distribution
@@ -79,7 +135,6 @@ const RecursionAnalytics = ({ debugData, currentStep }) => {
             </BarChart>
           </div>
         </div>
-
         <div className="mb-6">
           <h3 className="text-md font-medium mb-2">Stack Depth Over Time</h3>
           <div className="bg-gray-50 p-4 rounded-lg">
@@ -98,37 +153,9 @@ const RecursionAnalytics = ({ debugData, currentStep }) => {
             </LineChart>
           </div>
         </div>
-
-        <div>
-          <h3 className="text-md font-medium mb-2">Execution Statistics</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-indigo-50 p-4 rounded-lg">
-              <p className="text-sm text-indigo-900">Total Steps</p>
-              <p className="text-2xl font-bold text-indigo-700">
-                {debugData.debugStates.length}
-              </p>
-            </div>
-            <div className="bg-green-50 p-4 rounded-lg">
-              <p className="text-sm text-green-900">Max Stack Depth</p>
-              <p className="text-2xl font-bold text-green-700">
-                {Math.max(...stackDepthOverTime.map((d) => d.depth))}
-              </p>
-            </div>
-            <div className="bg-purple-50 p-4 rounded-lg">
-              <p className="text-sm text-purple-900">Function Calls</p>
-              <p className="text-2xl font-bold text-purple-700">
-                {Object.values(functionCalls).reduce((a, b) => a + b, 0)}
-              </p>
-            </div>
-            <div className="bg-blue-50 p-4 rounded-lg">
-              <p className="text-sm text-blue-900">Return Values</p>
-              <p className="text-2xl font-bold text-blue-700">
-                {returnValues.length}
-              </p>
-            </div>
-          </div>
-        </div>
       </div>
+
+      <ComplexityPanel complexity={complexity} />
     </div>
   );
 };
