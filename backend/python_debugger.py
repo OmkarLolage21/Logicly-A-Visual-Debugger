@@ -187,6 +187,8 @@ class SimpleTracer:
 
 def debug_python(code, input_data=None):
     """Debug Python code using sys.settrace"""
+    
+    complexity = analyze_complexity(code)
     # Save code to a temporary file
     with tempfile.NamedTemporaryFile('w', suffix='.py', delete=False) as temp_file:
         temp_file.write(code)
@@ -451,3 +453,75 @@ def has_vars_changed(prev_vars, current_vars):
             return True
             
     return False
+
+def analyze_complexity(code):
+    """Analyze time and space complexity of Python code"""
+    # Simple heuristic-based analysis
+    complexity = {
+        'time': 'O(1)',
+        'space': 'O(1)',
+        'has_recursion': False,
+        'has_loops': False,
+        'loop_details': []
+    }
+    
+    try:
+        # Check for recursion
+        if 'def ' in code and '(' in code and ')' in code:
+            # Simple check for recursive calls
+            function_lines = [line for line in code.split('\n') if line.strip().startswith('def ')]
+            for func_line in function_lines:
+                func_name = func_line.split('def ')[1].split('(')[0].strip()
+                if f"{func_name}(" in code.replace(func_line, ''):
+                    complexity['has_recursion'] = True
+                    complexity['time'] = 'O(2^n)'  # Default for recursion
+                    complexity['space'] = 'O(n)'   # Default stack depth for recursion
+        
+        # Check for loops
+        loops = ['for ', 'while ']
+        loop_counts = {loop: code.count(loop) for loop in loops}
+        total_loops = sum(loop_counts.values())
+        
+        if total_loops > 0:
+            complexity['has_loops'] = True
+            complexity['loop_details'] = []
+            
+            # Simple loop analysis
+            if total_loops == 1:
+                complexity['time'] = 'O(n)'
+            elif total_loops == 2:
+                complexity['time'] = 'O(n²)'
+            else:
+                complexity['time'] = f'O(n^{total_loops})'
+                
+            # Nested loop check
+            lines = code.split('\n')
+            indent_level = 0
+            max_nesting = 0
+            current_nesting = 0
+            
+            for line in lines:
+                stripped = line.strip()
+                if any(stripped.startswith(loop) for loop in loops):
+                    current_nesting += 1
+                    max_nesting = max(max_nesting, current_nesting)
+                    complexity['loop_details'].append({
+                        'type': 'for' if stripped.startswith('for') else 'while',
+                        'line': line,
+                        'nesting_level': current_nesting
+                    })
+                elif stripped.startswith('if ') or stripped.startswith('elif '):
+                    # Not counting conditionals toward nesting for complexity
+                    pass
+                else:
+                    # Reset nesting when we exit a block
+                    if stripped and not stripped.startswith(' ') and not stripped.startswith('#'):
+                        current_nesting = 0
+            
+            if max_nesting > 1:
+                complexity['time'] = f'O(n^{max_nesting})'
+                
+    except Exception as e:
+        print(f"Complexity analysis error: {str(e)}")
+    
+    return complexity

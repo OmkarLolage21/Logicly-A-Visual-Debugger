@@ -1,233 +1,291 @@
-import React, { useEffect, useRef } from "react";
+// File 2: RecursionTree.jsx — FINAL FIX: call & return links spaced apart, and function arguments visible in node label
+
+import React, { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 
 const RecursionTree = ({ debugData, currentStep, onStepChange }) => {
   const svgRef = useRef();
+  const containerRef = useRef();
+  const [viewAll, setViewAll] = useState(false);
+  const positions = useRef({});
 
   useEffect(() => {
-    if (!debugData || !debugData.callHierarchy || debugData.callHierarchy.length === 0) return;
+    if (!debugData?.callHierarchy?.length) return;
 
-    // Clear previous visualization
-    d3.select(svgRef.current).selectAll("*").remove();
-    
-    // Create a hierarchical tree structure from the callHierarchy data
-    const createTreeData = (callHierarchy) => {
-      // Create a map of call_id to node for quick lookups
-      const nodesMap = new Map();
-      
-      // Initialize all nodes first
-      callHierarchy.forEach(call => {
-        nodesMap.set(call.call_id, {
-          id: call.call_id,
-          name: call.function,
-          stackDepth: call.stack_depth,
-          entryLine: call.entry_line,
-          children: []
-        });
-      });
-      
-      // Find root nodes (those with no parent or parent is null)
-      const rootNodes = [];
-      
-      // Build the tree by connecting children to their parents
-      callHierarchy.forEach(call => {
-        const node = nodesMap.get(call.call_id);
-        
-        if (!call.parent_id) {
-          rootNodes.push(node);
-        } else {
-          const parentNode = nodesMap.get(call.parent_id);
-          if (parentNode) {
-            parentNode.children.push(node);
-          }
-        }
-      });
-      
-      // Add return values from the debug states
-      if (debugData.debugStates) {
-        debugData.debugStates.forEach(state => {
-          if (state.eventType === 'return' && state.callId && state.returnValue !== undefined) {
-            const node = nodesMap.get(state.callId);
-            if (node) {
-              node.returnValue = state.returnValue;
-            }
-          }
-        });
-      }
-      
-      // Skip module nodes and other non-essential nodes if needed
-      const filteredRoots = rootNodes.filter(node => 
-        node.name !== 'decode' && 
-        !node.name.startsWith('_')
-      );
-      
-      // If we have a module node with children, return its children
-      for (const root of rootNodes) {
-        if (root.name === '<module>' && root.children.length > 0) {
-          return root.children;
-        }
-      }
-      
-      return filteredRoots.length > 0 ? filteredRoots : rootNodes;
-    };
-    
-    const treeData = createTreeData(debugData.callHierarchy);
-    
-    // Set up SVG for the visualization
-    const width = 800;
+    const svgElement = d3.select(svgRef.current);
+    svgElement.selectAll("*").remove();
+
+    const container = containerRef.current;
+    const width = container.clientWidth;
     const height = 500;
-    const margin = { top: 40, right: 120, bottom: 40, left: 120 };
-    
-    const svg = d3.select(svgRef.current)
+    const margin = { top: 20, right: 20, bottom: 20, left: 20 };
+
+    const svg = svgElement
       .attr("width", width)
       .attr("height", height)
+      .call(
+        d3
+          .zoom()
+          .on("zoom", (event) => svgGroup.attr("transform", event.transform))
+      )
+      .append("g");
+
+    const svgGroup = svg
       .append("g")
       .attr("transform", `translate(${margin.left},${margin.top})`);
-    
-    // Prepare the tree layout
-    // If we have multiple root nodes, create a virtual root
-    let hierarchyRoot;
-    if (treeData.length > 1) {
-      hierarchyRoot = d3.hierarchy({ name: "root", children: treeData });
-      // Hide the virtual root
-      hierarchyRoot.depth = -1;
-    } else if (treeData.length === 1) {
-      hierarchyRoot = d3.hierarchy(treeData[0]);
-    } else {
-      return; // No data to visualize
-    }
-    
-    const treeLayout = d3.tree()
-      .size([height - margin.top - margin.bottom, width - margin.left - margin.right - 100]);
-    
-    // Adjust the node positions
-    const nodes = treeLayout(hierarchyRoot);
-    
-    // Get current call ID from the current step
-    const currentCallId = debugData.debugStates[currentStep]?.callId;
-    
-    // Find all parent nodes of the current node
-    const getAncestorIds = (callId, ancestorIds = new Set()) => {
-      const callInfo = debugData.callHierarchy.find(c => c.call_id === callId);
-      if (callInfo && callInfo.parent_id) {
-        ancestorIds.add(callInfo.parent_id);
-        getAncestorIds(callInfo.parent_id, ancestorIds);
-      }
-      return ancestorIds;
-    };
-    
-    const ancestorIds = currentCallId ? getAncestorIds(currentCallId) : new Set();
-    
-    // Draw links between nodes
-    svg.selectAll(".link")
-      .data(nodes.descendants().slice(1)) // Skip the virtual root if it exists
-      .enter()
+
+    // Define arrowhead
+    svgGroup
+      .append("defs")
+      .append("marker")
+      .attr("id", "arrow")
+      .attr("viewBox", "0 -5 10 10")
+      .attr("refX", 10)
+      .attr("refY", 0)
+      .attr("markerWidth", 6)
+      .attr("markerHeight", 6)
+      .attr("orient", "auto")
       .append("path")
-      .attr("class", "link")
-      .attr("d", d => {
-        if (!d.parent || d.parent.depth < 0) {
-          // Handle case for children of virtual root
-          return `M${d.y},${d.x} L${d.y},${d.x}`;
-        }
-        return `M${d.y},${d.x} L${d.parent.y},${d.parent.x}`;
-      })
-      .attr("fill", "none")
-      .attr("stroke", d => {
-        // Highlight the path to the current node
-        if (d.data.id === currentCallId || ancestorIds.has(d.data.id)) {
-          return "#ff7f0e";
-        }
-        return "#555";
-      })
-      .attr("stroke-width", d => {
-        // Make the current path thicker
-        if (d.data.id === currentCallId || ancestorIds.has(d.data.id)) {
-          return 2;
-        }
-        return 1.5;
+      .attr("d", "M0,-5L10,0L0,5")
+      .attr("fill", "#999");
+
+    const buildTree = () => {
+      const nodesMap = new Map();
+      const rootNodes = [];
+
+      const filteredCalls = debugData.callHierarchy.filter((call) => {
+        const idx = debugData.debugStates.findIndex(
+          (s) => s.callId === call.call_id
+        );
+        return (
+          viewAll ||
+          idx <= currentStep ||
+          (debugData.debugStates[idx]?.eventType === "return" &&
+            idx <= currentStep)
+        );
       });
-    
-    // Create node groups
-    const nodeGroups = svg.selectAll(".node")
-      .data(nodes.descendants().filter(d => d.depth >= 0)) // Skip the virtual root if it exists
+
+      filteredCalls.forEach((call) => {
+        const args = call.args ? Object.values(call.args).join(", ") : "";
+        nodesMap.set(call.call_id, {
+          id: call.call_id,
+          name: `${call.function}(${args})`,
+          children: [],
+          depth: call.stack_depth,
+        });
+      });
+
+      filteredCalls.forEach((call) => {
+        const node = nodesMap.get(call.call_id);
+        if (call.parent_id && nodesMap.has(call.parent_id)) {
+          const parent = nodesMap.get(call.parent_id);
+          parent.children.push(node);
+        } else {
+          rootNodes.push(node);
+        }
+
+        const returnState = debugData.debugStates.find(
+          (s) => s.callId === call.call_id && s.eventType === "return"
+        );
+
+        const returnStepIndex = debugData.debugStates.findIndex(
+          (s) => s.callId === call.call_id && s.eventType === "return"
+        );
+
+        if (returnState && (viewAll || returnStepIndex <= currentStep)) {
+          node.returnValue = returnState.returnValue;
+        }
+      });
+
+      return rootNodes.length === 1
+        ? rootNodes[0]
+        : { name: "root", children: rootNodes };
+    };
+
+    const root = d3.hierarchy(buildTree());
+    const treeLayout = d3.tree().nodeSize([120, 120]);
+    treeLayout(root);
+
+    const currentCallId = debugData.debugStates?.[currentStep]?.callId;
+    const getAncestors = (id) => {
+      const ancestors = new Set();
+      let currentId = id;
+      while (currentId) {
+        ancestors.add(currentId);
+        currentId = debugData.callHierarchy.find(
+          (c) => c.call_id === currentId
+        )?.parent_id;
+      }
+      return ancestors;
+    };
+    const highlightedNodes = currentCallId
+      ? getAncestors(currentCallId)
+      : new Set();
+
+    const getPos = (d) => positions.current[d.data.id] || { x: d.x, y: d.y };
+    const linkGroup = svgGroup.append("g");
+    const labelGroup = svgGroup.append("g");
+    const nodeGroup = svgGroup.append("g");
+
+    const drawLinks = () => {
+      const links = root.links();
+      const returnLinks = links.filter(
+        (l) => l.target.data.returnValue !== undefined
+      );
+      const callLinks = links.filter(
+        (l) => l.target.data.returnValue === undefined
+      );
+
+      linkGroup
+        .selectAll("path.call-link")
+        .data(callLinks)
+        .join("path")
+        .attr("class", "call-link")
+        .attr("fill", "none")
+        .attr("stroke", (d) =>
+          highlightedNodes.has(d.target.data.id) ? "#ff7f0e" : "#999"
+        )
+        .attr("stroke-width", (d) =>
+          highlightedNodes.has(d.target.data.id) ? 2 : 1
+        )
+        .attr("marker-end", "url(#arrow)")
+        .attr("d", (d) => {
+          const source = getPos(d.source);
+          const target = getPos(d.target);
+          return `M${source.x},${source.y - 5} C${source.x},${
+            (source.y + target.y) / 2 - 10
+          } ${target.x},${(source.y + target.y) / 2 - 10} ${target.x},${
+            target.y - 5
+          }`;
+        });
+
+      linkGroup
+        .selectAll("path.return-link")
+        .data(returnLinks)
+        .join("path")
+        .attr("class", "return-link")
+        .attr("fill", "none")
+        .attr("stroke", "#e41a1c")
+        .attr("stroke-dasharray", "4 2")
+        .attr("stroke-width", 1.5)
+        .attr("marker-end", "url(#arrow)")
+        .attr("d", (d) => {
+          const source = getPos(d.source);
+          const target = getPos(d.target);
+          return `M${source.x},${source.y + 5} C${source.x},${
+            (source.y + target.y) / 2 + 10
+          } ${target.x},${(source.y + target.y) / 2 + 10} ${target.x},${
+            target.y + 5
+          }`;
+        });
+
+      labelGroup
+        .selectAll("text.return-label")
+        .data(returnLinks)
+        .join("text")
+        .attr("class", "return-label")
+        .attr("text-anchor", "middle")
+        .attr("font-size", "10px")
+        .attr("fill", "#e41a1c")
+        .attr("x", (d) => {
+          const s = getPos(d.source);
+          const t = getPos(d.target);
+          return (s.x + t.x) / 2;
+        })
+        .attr("y", (d) => {
+          const s = getPos(d.source);
+          const t = getPos(d.target);
+          return (s.y + t.y) / 2 + 20;
+        })
+        .text((d) => `→ ${d.target.data.returnValue}`);
+    };
+
+    const node = nodeGroup
+      .selectAll("g.node")
+      .data(root.descendants())
       .enter()
       .append("g")
       .attr("class", "node")
-      .attr("transform", d => `translate(${d.y},${d.x})`)
-      .on("click", (event, d) => {
-        // Find the corresponding debug state when node is clicked
-        const clickedCallId = d.data.id;
-        const matchingStateIndex = debugData.debugStates.findIndex(
-          state => state.callId === clickedCallId
+      .attr("transform", (d) => {
+        positions.current[d.data.id] = { x: d.x, y: d.y };
+        return `translate(${d.x},${d.y})`;
+      })
+      .call(
+        d3.drag().on("drag", function (event, d) {
+          positions.current[d.data.id] = { x: event.x, y: event.y };
+          d3.select(this).attr("transform", `translate(${event.x},${event.y})`);
+          drawLinks();
+        })
+      )
+      .on("click", (_, d) => {
+        if (!d.data.id) return;
+        const matchingStep = debugData.debugStates.findIndex(
+          (s) => s.callId === d.data.id
         );
-        
-        if (matchingStateIndex >= 0 && onStepChange) {
-          onStepChange(matchingStateIndex);
-        }
+        if (matchingStep >= 0) onStepChange(matchingStep);
       });
-    
-    // Add circles for the nodes
-    nodeGroups.append("circle")
+
+    node
+      .append("circle")
       .attr("r", 8)
-      .attr("fill", d => {
-        // Highlight the current node
-        if (d.data.id === currentCallId) {
-          return "#ff7f0e";
-        }
-        // Highlight ancestor nodes
-        if (ancestorIds.has(d.data.id)) {
-          return "#ffa54f";
-        }
-        return "#1f77b4";
+      .attr("fill", (d) => {
+        if (d.data.id === currentCallId) return "#ff7f0e";
+        if (d.data.returnValue !== undefined) return "#e41a1c";
+        return highlightedNodes.has(d.data.id) ? "#ffbb78" : "#1f77b4";
       })
       .attr("stroke", "#fff")
       .attr("stroke-width", 2);
-    
-    // Add function name labels
-    nodeGroups.append("text")
-      .attr("dy", -12)
-      .attr("x", d => d.children ? -13 : 13)
-      .attr("text-anchor", d => d.children ? "end" : "start")
-      .text(d => `${d.data.name}()`);
-    
-    // Add return value labels where available
-    nodeGroups.filter(d => d.data.returnValue !== undefined)
+
+    node
       .append("text")
-      .attr("dy", 20)
-      .attr("x", d => d.children ? -13 : 13)
-      .attr("text-anchor", d => d.children ? "end" : "start")
-      .attr("fill", "#e41a1c")
-      .text(d => `returns: ${d.data.returnValue}`);
-    
-  }, [debugData, currentStep, onStepChange]);
+      .attr("dy", (d) => (d.children ? -15 : 15))
+      .attr("text-anchor", "middle")
+      .text((d) => d.data.name || "")
+      .attr("font-size", "11px")
+      .attr("fill", "#333");
+
+    drawLinks();
+  }, [debugData, currentStep, onStepChange, viewAll]);
 
   return (
-    <div>
-      <h2 className="text-lg font-semibold mb-4">Recursion Tree</h2>
-      <div className="border border-gray-300 rounded-lg p-2 overflow-x-auto">
-        <svg 
-          ref={svgRef} 
-          width="800" 
-          height="500"
-          className="mx-auto block" 
-        ></svg>
+    <div className="bg-white rounded-xl shadow-lg p-4">
+      <div className="flex justify-between items-center mb-3">
+        <h2 className="text-lg font-semibold">Recursion Tree</h2>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setViewAll(!viewAll)}
+            className="text-xs text-blue-600 underline"
+          >
+            {viewAll ? "View Stepwise" : "View Full Tree"}
+          </button>
+          <div className="text-xs text-gray-500">
+            {debugData?.debugStates?.length || 0} steps
+          </div>
+        </div>
       </div>
-      <div className="p-2 text-sm text-gray-600">
-        <p className="flex items-center space-x-4">
+
+      <div ref={containerRef} className="overflow-x-auto">
+        <svg ref={svgRef} width="100%" height="500" className="block" />
+      </div>
+
+      <div className="mt-3 text-xs text-gray-600">
+        <div className="flex flex-wrap gap-3 justify-center">
           <span className="flex items-center">
-            <span className="inline-block w-3 h-3 rounded-full bg-blue-500 mr-1"></span>
-            <span>Function call</span>
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1"></span>
+            <span>Function</span>
           </span>
           <span className="flex items-center">
-            <span className="inline-block w-3 h-3 rounded-full bg-orange-500 mr-1"></span>
-            <span>Current function</span>
+            <span className="inline-block w-2 h-2 rounded-full bg-orange-500 mr-1"></span>
+            <span>Current</span>
           </span>
           <span className="flex items-center">
-            <span className="inline-block w-3 h-3 rounded-full bg-red-500 mr-1"></span>
+            <span className="inline-block w-2 h-2 rounded-full bg-red-500 mr-1"></span>
             <span>Returns</span>
           </span>
+        </div>
+        <p className="mt-1 text-center">
+          Click nodes to navigate. Drag to reposition. Scroll to zoom.
         </p>
-        <p className="text-xs mt-1">Click on any node to jump to that execution step.</p>
       </div>
     </div>
   );
